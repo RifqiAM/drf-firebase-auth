@@ -8,7 +8,6 @@ import logging
 
 import firebase_admin
 from firebase_admin import auth as firebase_auth
-from django.utils.encoding import smart_text
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
@@ -78,10 +77,9 @@ class FirebaseAuthentication(authentication.TokenAuthentication):
         """ Returns firebase user if token is authenticated """
         return firebase_auth.UserRecord(
             dict(
-                localId=decoded_token["uid"],
-                display_name=decoded_token.get("name"),
+                localId=decoded_token.get("uid"),
                 email=decoded_token.get("email"),
-                photo_url=decoded_token.get("picture"),
+                emailVerified=decoded_token.get("email_verified"),
             )
         )
 
