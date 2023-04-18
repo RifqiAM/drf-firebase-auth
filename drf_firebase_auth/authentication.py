@@ -76,20 +76,14 @@ class FirebaseAuthentication(authentication.TokenAuthentication):
         decoded_token: Dict
     ) -> firebase_auth.UserRecord:
         """ Returns firebase user if token is authenticated """
-        try:
-            uid = decoded_token.get('uid')
-            log.info(f'_authenticate_token - uid: {uid}')
-            firebase_user = firebase_auth.get_user(uid)
-            log.info(f'_authenticate_token - firebase_user: {firebase_user}')
-            if api_settings.FIREBASE_AUTH_EMAIL_VERIFICATION:
-                if not firebase_user.email_verified:
-                    raise Exception(
-                        'Email address of this user has not been verified.'
-                    )
-            return firebase_user
-        except Exception as e:
-            log.error(f'_authenticate_token - Exception: {e}')
-            raise Exception(e)
+        return firebase_auth.UserRecord(
+            dict(
+                localId=decoded_token["uid"],
+                display_name=decoded_token.get("name"),
+                email=decoded_token.get("email"),
+                photo_url=decoded_token.get("picture"),
+            )
+        )
 
     def _get_or_create_local_user(
         self,
