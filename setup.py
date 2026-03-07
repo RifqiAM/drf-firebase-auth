@@ -20,10 +20,9 @@ setuptools.setup(
     long_description=long_description,
     long_description_content_type='text/markdown',
     packages=setuptools.find_packages(),
-    python_requires='>=3.4',
+    python_requires='>=3.9',
     install_requires=[
-        'djangorestframework>=3.9,<4',
-        'firebase-admin>=4.5,<5'
+        'djangorestframework>=3.16.0,<4.0.0', 'firebase-admin>=7.2.0,<8.0.0'
     ],
     classifiers=[
         'Environment :: Web Environment',
@@ -35,12 +34,7 @@ setuptools.setup(
         'Topic :: Internet :: WWW/HTTP',
     ],
     keywords=[
-        'drf',
-        'django',
-        'rest_framework',
-        'djangorestframework',
-        'authentication',
-        'python3',
-        'firebase'
+        'drf', 'django', 'rest_framework', 'djangorestframework',
+        'authentication', 'python3', 'firebase'
     ],
 )

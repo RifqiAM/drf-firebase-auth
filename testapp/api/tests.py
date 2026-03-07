@@ -1,235 +1,258 @@
 from unittest import mock
 
 from django.urls import reverse
-from django.conf import settings
 from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.test import APITestCase
-import requests
-import firebase_admin
 from firebase_admin import auth as firebase_auth
 from drf_firebase_auth.settings import api_settings
-from drf_firebase_auth.utils import (
-    get_firebase_user_email,
-    map_firebase_uid_to_username,
-    map_firebase_email_to_username
-)
+from drf_firebase_auth.utils import map_firebase_uid_to_username, map_firebase_email_to_username
 
 User = get_user_model()
-firebase_credentials = firebase_admin.credentials.Certificate(
-    api_settings.FIREBASE_SERVICE_ACCOUNT_KEY
-)
-firebase = firebase_admin.initialize_app(
-    credential=firebase_credentials,
-    name=__name__
-)
+# Firebase initialization is now lazy in the authentication class
+
 
 class WhoAmITests(APITestCase):
-    
+
     def setUp(self):
         self._url = reverse('whoami')
         self._test_user_email = 'user@example.com'
         self._id_token_endpoint = (
             'https://identitytoolkit.googleapis.com/v1/accounts'
-            ':signInWithCustomToken?key={api_key}'
-        )
+            ':signInWithCustomToken?key={api_key}')
         self._MOCK_FIREBASE_CREATE_LOCAL_USER_FALSE = mock.patch(
             'drf_firebase_auth.authentication.api_settings'
             '.FIREBASE_CREATE_LOCAL_USER',
-            new=False
-        )
+            new=False)
         self._MOCK_FIREBASE_CREATE_LOCAL_USER_TRUE = mock.patch(
             'drf_firebase_auth.authentication.api_settings'
             '.FIREBASE_CREATE_LOCAL_USER',
-            new=True
-        )
+            new=True)
         self._MOCK_FIREBASE_USERNAME_MAPPING_FUNC_UID = mock.patch(
             'drf_firebase_auth.authentication.api_settings'
             '.FIREBASE_USERNAME_MAPPING_FUNC',
-            new=map_firebase_uid_to_username
-        )
+            new=map_firebase_uid_to_username)
         self._MOCK_FIREBASE_USERNAME_MAPPING_FUNC_EMAIL = mock.patch(
             'drf_firebase_auth.authentication.api_settings'
             '.FIREBASE_USERNAME_MAPPING_FUNC',
-            new=map_firebase_email_to_username
-        )
+            new=map_firebase_email_to_username)
 
-    def _get_test_user(self) -> firebase_admin.auth.UserRecord:
-        try:
-            return firebase_auth.get_user_by_email(self._test_user_email)
-        except Exception as e:
-            raise Exception(e)
+    def _get_mock_user(self, uid='test-uid', email='user@example.com'):
+        mock_user = mock.MagicMock(spec=firebase_auth.UserRecord)
+        mock_user.uid = uid
+        mock_user.email = email
+        mock_user.display_name = 'Test User'
+        mock_user.provider_data = []
+        return mock_user
 
-    def _create_custom_token(self) -> str:
-        try:
-            user = self._get_test_user()
-            return firebase_admin.auth.create_custom_token(user.uid)
-        except Exception as e:
-            raise Exception(e)
-
-    def _generate_id_token(self) -> str:
-        """
-        generate an id token for testing against api
-
-        https://firebase.google.com/docs/reference/rest/auth/
-        """
-        try:
-            url = self._id_token_endpoint.format(
-                api_key=settings.FIREBASE_DRF_FIREBASE_AUTH_API_KEY
-            )
-            data = {
-                'token': self._create_custom_token(),
-                'returnSecureToken': True
-            }
-            res = requests.post(url, data=data)
-            res.raise_for_status()
-            return res.json()['idToken']
-        except Exception as e:
-            raise Exception(e)
-
-    def test_authenticated_request(self):
+    @mock.patch('drf_firebase_auth.authentication.get_firebase_app')
+    @mock.patch('drf_firebase_auth.authentication.firebase_auth.get_user')
+    @mock.patch(
+        'drf_firebase_auth.authentication.firebase_auth.verify_id_token')
+    def test_authenticated_request(self, mock_verify, mock_get_user, mock_app):
         """ ensure we can auth with a valid id token """
+        uid = 'test-uid-123'
+        mock_verify.return_value = {'uid': uid}
+        mock_get_user.return_value = self._get_mock_user(uid=uid)
+
         self.client.credentials(
-            HTTP_AUTHORIZATION=(
-                f'{api_settings.FIREBASE_AUTH_HEADER_PREFIX} '
-                f'{self._generate_id_token()}'
-            )
-        )
+            HTTP_AUTHORIZATION=
+            f'{api_settings.FIREBASE_AUTH_HEADER_PREFIX} valid-token')
 
         with self._MOCK_FIREBASE_CREATE_LOCAL_USER_FALSE:
             response = self.client.get(self._url)
-            self.assertEqual(
-                response.status_code,
-                status.HTTP_403_FORBIDDEN,
-                f'{api_settings.FIREBASE_CREATE_LOCAL_USER}'
-            )
-        
+            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
         with self._MOCK_FIREBASE_CREATE_LOCAL_USER_TRUE:
             response = self.client.get(self._url)
-            self.assertEqual(
-                response.status_code,
-                status.HTTP_200_OK,
-                f'{response.data}'
-            )
-
-            expected_user = self._get_test_user()
-            self.assertTrue('request.auth' in response.data)
-            self.assertEqual(response.data['request.auth']['uid'], expected_user.uid)
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertEqual(response.data['request.auth']['uid'], uid)
 
     def test_unauthenticated_request(self):
         """ ensure we cannot auth without a valid id token """
         response = self.client.get(self._url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_invalid_token_request(self):
+    @mock.patch('drf_firebase_auth.authentication.get_firebase_app')
+    @mock.patch(
+        'drf_firebase_auth.authentication.firebase_auth.verify_id_token')
+    def test_invalid_token_request(self, mock_verify, mock_app):
         """ ensure we cannot auth with an invalid id token """
-        # verify_id_token should raise on custom token
-        invalid_token = self._create_custom_token()
+        mock_verify.side_effect = Exception("Invalid token")
+
         self.client.credentials(
-            HTTP_AUTHORIZATION=(
-                f'{api_settings.FIREBASE_AUTH_HEADER_PREFIX} '
-                f'{invalid_token}'
-            )
-        )
+            HTTP_AUTHORIZATION=
+            f'{api_settings.FIREBASE_AUTH_HEADER_PREFIX} invalid-token')
         response = self.client.get(self._url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_user_creation_uid_as_username(self):
+    @mock.patch('drf_firebase_auth.authentication.get_firebase_app')
+    @mock.patch('drf_firebase_auth.authentication.firebase_auth.get_user')
+    @mock.patch(
+        'drf_firebase_auth.authentication.firebase_auth.verify_id_token')
+    def test_user_creation_uid_as_username(self, mock_verify, mock_get_user,
+                                           mock_app):
         """ ensure user is created dependent on FIREBASE_CREATE_LOCAL_USER """
+        uid = 'test-uid-456'
+        email = 'newuser@example.com'
+        mock_verify.return_value = {'uid': uid}
+        mock_get_user.return_value = self._get_mock_user(uid=uid, email=email)
+
         self.client.credentials(
-            HTTP_AUTHORIZATION=(
-                f'{api_settings.FIREBASE_AUTH_HEADER_PREFIX} '
-                f'{self._generate_id_token()}'
-            )
-        )
-        firebase_user = self._get_test_user()
-        firebase_user_email = get_firebase_user_email(firebase_user)
+            HTTP_AUTHORIZATION=
+            f'{api_settings.FIREBASE_AUTH_HEADER_PREFIX} some-token')
 
         with self._MOCK_FIREBASE_CREATE_LOCAL_USER_FALSE:
             before_count = User.objects.count()
-            
             response = self.client.get(self._url)
-            self.assertEqual(
-                response.status_code,
-                status.HTTP_403_FORBIDDEN,
-                f'{response.data}'
-            )
+            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+            self.assertEqual(User.objects.count(), before_count)
 
-            after_count = User.objects.count()
-            expected_count = before_count
-            self.assertEqual(expected_count, after_count)
-
-            with self.assertRaises(Exception):
-                _ = User.objects.get(email=firebase_user_email)
-        
         with self._MOCK_FIREBASE_CREATE_LOCAL_USER_TRUE:
             with self._MOCK_FIREBASE_USERNAME_MAPPING_FUNC_UID:
                 before_count = User.objects.count()
-                
                 response = self.client.get(self._url)
-                self.assertEqual(
-                    response.status_code,
-                    status.HTTP_200_OK,
-                    f'{response.data}'
-                )
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.assertEqual(User.objects.count(), before_count + 1)
+                self.assertIsNotNone(User.objects.filter(email=email).first())
+                self.assertIsNotNone(User.objects.filter(username=uid).first())
 
-                after_count = User.objects.count()
-                expected_count = before_count + 1
-                self.assertEqual(expected_count, after_count)
-
-                self.assertIsNotNone(
-                    User.objects.filter(email=firebase_user_email).first()
-                )
-                self.assertIsNotNone(
-                    User.objects.filter(username=firebase_user.uid).first()
-                )
-
-    def test_user_creation_email_as_username(self):
+    @mock.patch('drf_firebase_auth.authentication.get_firebase_app')
+    @mock.patch('drf_firebase_auth.authentication.firebase_auth.get_user')
+    @mock.patch(
+        'drf_firebase_auth.authentication.firebase_auth.verify_id_token')
+    def test_user_creation_email_as_username(self, mock_verify, mock_get_user,
+                                             mock_app):
         """ ensure user is created dependent on FIREBASE_CREATE_LOCAL_USER """
+        uid = 'test-uid-789'
+        email = 'emailuser@example.com'
+        mock_verify.return_value = {'uid': uid}
+        mock_get_user.return_value = self._get_mock_user(uid=uid, email=email)
+
         self.client.credentials(
-            HTTP_AUTHORIZATION=(
-                f'{api_settings.FIREBASE_AUTH_HEADER_PREFIX} '
-                f'{self._generate_id_token()}'
-            )
-        )
-        firebase_user = self._get_test_user()
-        firebase_user_email = get_firebase_user_email(firebase_user)
+            HTTP_AUTHORIZATION=
+            f'{api_settings.FIREBASE_AUTH_HEADER_PREFIX} some-token')
 
         with self._MOCK_FIREBASE_CREATE_LOCAL_USER_FALSE:
             before_count = User.objects.count()
-            
             response = self.client.get(self._url)
-            self.assertEqual(
-                response.status_code,
-                status.HTTP_403_FORBIDDEN,
-                f'{response.data}'
-            )
+            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+            self.assertEqual(User.objects.count(), before_count)
 
-            after_count = User.objects.count()
-            expected_count = before_count
-            self.assertEqual(expected_count, after_count)
-
-            with self.assertRaises(Exception):
-                _ = User.objects.get(email=firebase_user_email)
-        
         with self._MOCK_FIREBASE_CREATE_LOCAL_USER_TRUE:
             with self._MOCK_FIREBASE_USERNAME_MAPPING_FUNC_EMAIL:
                 before_count = User.objects.count()
-                
                 response = self.client.get(self._url)
-                self.assertEqual(
-                    response.status_code,
-                    status.HTTP_200_OK,
-                    f'{response.data}'
-                )
-
-                after_count = User.objects.count()
-                expected_count = before_count + 1
-                self.assertEqual(expected_count, after_count)
-
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.assertEqual(User.objects.count(), before_count + 1)
+                self.assertIsNotNone(User.objects.filter(email=email).first())
                 self.assertIsNotNone(
-                    User.objects.filter(email=firebase_user_email).first()
-                )
-                self.assertIsNotNone(
-                    User.objects.filter(username=firebase_user_email).first()
-                )
+                    User.objects.filter(username=email).first())
+
+
+class ProviderPersistenceTests(APITestCase):
+
+    def setUp(self):
+        self._url = reverse('whoami')
+        self._uid = 'test-uid-123'
+        self._email = 'test@example.com'
+
+        # Create local user and firebase records
+        self.user = User.objects.create_user(username='testuser',
+                                             email=self._email)
+        from drf_firebase_auth.models import FirebaseUser, FirebaseUserProvider
+        self.fb_user = FirebaseUser.objects.create(user=self.user,
+                                                   uid=self._uid)
+        self.provider = FirebaseUserProvider.objects.create(
+            firebase_user=self.fb_user,
+            provider_id='google.com',
+            uid='google-uid-123')
+
+    @mock.patch('drf_firebase_auth.authentication.get_firebase_app')
+    @mock.patch('drf_firebase_auth.authentication.firebase_auth.get_user')
+    @mock.patch(
+        'drf_firebase_auth.authentication.firebase_auth.verify_id_token')
+    def test_provider_persistence(self, mock_verify, mock_get_user, mock_app):
+        """
+        Ensure existing provider records are NOT deleted when logging in.
+        """
+        # Mock verification
+        mock_verify.return_value = {
+            'uid': self._uid,
+            'email': self._email,
+            'email_verified': True,
+        }
+
+        # Mock UserRecord from Firebase
+        mock_user = mock.MagicMock(spec=firebase_auth.UserRecord)
+        mock_user.uid = self._uid
+        mock_user.email = self._email
+        mock_user.display_name = 'Test User'
+
+        mock_provider = mock.MagicMock()
+        mock_provider.provider_id = 'google.com'
+        mock_provider.uid = 'google-uid-123'
+        mock_user.provider_data = [mock_provider]
+
+        mock_get_user.return_value = mock_user
+
+        self.client.credentials(
+            HTTP_AUTHORIZATION=
+            f'{api_settings.FIREBASE_AUTH_HEADER_PREFIX} some-token')
+
+        from drf_firebase_auth.models import FirebaseUserProvider
+
+        # Before request
+        self.assertEqual(FirebaseUserProvider.objects.count(), 1)
+
+        response = self.client.get(self._url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # After request - Provider should still exist!
+        self.assertEqual(FirebaseUserProvider.objects.count(), 1,
+                         "Provider record was incorrectly deleted!")
+        self.assertEqual(FirebaseUserProvider.objects.first().provider_id,
+                         'google.com')
+
+    @mock.patch('drf_firebase_auth.authentication.get_firebase_app')
+    @mock.patch('drf_firebase_auth.authentication.firebase_auth.get_user')
+    @mock.patch(
+        'drf_firebase_auth.authentication.firebase_auth.verify_id_token')
+    def test_provider_sync(self, mock_verify, mock_get_user, mock_app):
+        """
+        Ensure new provider records ARE added and old ones removed if changed in Firebase.
+        """
+        # Mock verification
+        mock_verify.return_value = {
+            'uid': self._uid,
+            'email': self._email,
+            'email_verified': True,
+        }
+
+        # Mock UserRecord with DIFFERENT provider
+        mock_user = mock.MagicMock(spec=firebase_auth.UserRecord)
+        mock_user.uid = self._uid
+        mock_user.email = self._email
+        mock_user.display_name = 'Test User'
+
+        mock_provider = mock.MagicMock()
+        mock_provider.provider_id = 'facebook.com'
+        mock_provider.uid = 'fb-uid-123'
+        mock_user.provider_data = [mock_provider]
+
+        mock_get_user.return_value = mock_user
+
+        self.client.credentials(
+            HTTP_AUTHORIZATION=
+            f'{api_settings.FIREBASE_AUTH_HEADER_PREFIX} some-token')
+
+        from drf_firebase_auth.models import FirebaseUserProvider
+
+        response = self.client.get(self._url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # After request - Provider should have changed
+        providers = FirebaseUserProvider.objects.all()
+        self.assertEqual(providers.count(), 1)
+        self.assertEqual(providers[0].provider_id, 'facebook.com')
+        self.assertEqual(providers[0].uid, 'fb-uid-123')
