@@ -8,6 +8,7 @@ import logging
 
 import firebase_admin
 from firebase_admin import auth as firebase_auth
+from django.core.cache import cache
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
@@ -48,9 +49,17 @@ class FirebaseAuthentication(authentication.TokenAuthentication):
                                  token: str) -> Tuple[AnonymousUser, Dict]:
         try:
             decoded_token = self._decode_token(token)
-            firebase_user = self._authenticate_token(decoded_token)
-            local_user = self._get_or_create_local_user(firebase_user)
-            self._create_local_firebase_user(local_user, firebase_user)
+            uid = decoded_token.get("uid")
+
+            cache_key = f"drf_firebase_auth_user_{uid}"
+            local_user = cache.get(cache_key)
+
+            if not local_user:
+                firebase_user = self._authenticate_token(decoded_token)
+                local_user = self._get_or_create_local_user(firebase_user)
+                self._create_local_firebase_user(local_user, firebase_user)
+                cache.set(cache_key, local_user, timeout=60 * 5)
+
             return (local_user, decoded_token)
         except Exception as e:
             raise exceptions.AuthenticationFailed(str(e))
