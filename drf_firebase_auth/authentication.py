@@ -97,7 +97,7 @@ class FirebaseAuthentication(authentication.TokenAuthentication):
             if not user.is_active:
                 raise Exception('User account is not currently active.')
             user.last_login = timezone.now()
-            user.save()
+            user.save(update_fields=['last_login'])
         except User.DoesNotExist as e:
             log.error(
                 f'_get_or_create_local_user - User.DoesNotExist: {email}')
@@ -109,13 +109,15 @@ class FirebaseAuthentication(authentication.TokenAuthentication):
             try:
                 user = User.objects.create_user(username=username, email=email)
                 user.last_login = timezone.now()
+                update_fields = ['last_login']
                 if (api_settings.FIREBASE_ATTEMPT_CREATE_WITH_DISPLAY_NAME
                         and firebase_user.display_name is not None):
                     display_name = firebase_user.display_name.split(' ')
                     if len(display_name) == 2:
                         user.first_name = display_name[0]
                         user.last_name = display_name[1]
-                user.save()
+                        update_fields.extend(['first_name', 'last_name'])
+                user.save(update_fields=update_fields)
             except Exception as e_create:
                 raise Exception(e_create)
         return user
@@ -133,7 +135,7 @@ class FirebaseAuthentication(authentication.TokenAuthentication):
 
         if local_firebase_user.uid != firebase_user.uid:
             local_firebase_user.uid = firebase_user.uid
-            local_firebase_user.save()
+            local_firebase_user.save(update_fields=['uid'])
 
         # store FirebaseUserProvider data
         for provider in firebase_user.provider_data:
